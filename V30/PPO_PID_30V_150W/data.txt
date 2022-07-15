@@ -1,0 +1,19 @@
+Agent 6883
+meanVout =
+
+   29.8237
+
+
+stdV_out =
+
+    1.5932
+
+
+meanSquareError =
+
+  757.9931
+
+
+meanAbsoluteError =
+
+    0.1763

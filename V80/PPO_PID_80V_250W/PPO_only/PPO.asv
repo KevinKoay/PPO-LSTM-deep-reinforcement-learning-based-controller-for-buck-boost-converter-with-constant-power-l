@@ -1,0 +1,165 @@
+clear;
+clc;
+%% Open the file
+mdl = 'buck_boost_model';
+open_system(mdl)
+%% Set random seed to 0 for reproducibility
+rng(0)
+%% Turn off data logging simulink to save memory
+Simulink.sdi.setArchiveRunLimit(0);
+Simulink.sdi.setAutoArchiveMode(false);
+Simulink.sdi.clear
+sdi.Repository.clearRepositoryFile
+%under simulink Model setting, turn off all logging data
+%https://www.mathworks.com/help/simulink/slref/simulink.sdi.clear.html
+%% Reward Generator
+% blk = 'buck_boost_model/BuckBoostStepResponse';
+% generateRewardFunction(blk)
+%%
+% GLOBAL PARAMETERS 
+% Parameter values
+num_episodes = 30000;
+numValidationExperiments = 20;
+%%
+% Signal Processing Parameters
+% prev_time = 0;
+ init_action = 0.48; 
+% threshold1= 0.4;
+% threshold2 =1;
+% error_threshold = 0.02;
+% stopping_criterion=1000;
+%%
+Ts = 0.00001;
+Tf = 0.007; %%final Time
+V_ref =80; 
+
+%% RL Parameters
+miniBatch_percent = 0.8;
+learnRateActor = 0.001;
+learnRateCritic= 0.01;
+criticLayerSizes= [128 128];
+actorLayerSizes= [400 400];
+
+max_steps = ceil(Tf/Ts);
+ExperienceHorisonLength = max_steps; %% learn after max_steps steps in per episode, better 
+%same or lower (in division of real number) steps per episode
+ClipFactorVal = 0.1;
+EntropyLossWeightVal = 0.01;
+MiniBatchSizeVal =250; % select base on the power of 2^n,
+%but also can be 25% of the total experience horizontal, 
+%if higher batch size is possible as it can train fast but will have be
+%affected by the quality, low batch size will train slow but good quality
+%https://datascience.stackexchange.com/questions/18414/are-there-any-rules-for-choosing-the-size-of-a-mini-batch
+%https://medium.com/aureliantactics/ppo-hyperparameters-and-ranges-6fc2d29bccbe
+NumEpochsVal = 3; 
+DiscountFactorVal = 0.998;
+
+%The agent collects experiences until it reaches the experience horizon of 
+%50 steps or episode termination and then trains from mini-batches of 40 experiences for 3 epochs
+%% Setting Action and Observation Parameter
+agentblk = [mdl '/RL Agent'];
+
+numObs = 2; % [v0, e, de/dt]
+observationInfo = rlNumericSpec([numObs,1],...
+    'LowerLimit',[0 -130]',...
+    'UpperLimit',[130 130]');
+observationInfo.Name = 'observations';
+observationInfo.Description = 'voltage output';
+
+PWMduty = 0.48 : 0.002 : 0.65;
+length(PWMduty)
+actionInfo = rlFiniteSetSpec(num2cell(PWMduty));
+actionInfo.Name = 'actions';
+
+% actionInfo = rlNumericSpec([1,1],"LowerLimit",0.1,"UpperLimit",0.95);
+% actionInfo.Name = 'actions';
+%numActions = numel(actionInfo.Elements);
+
+% actionInfo = rlNumericSpec([1 1], 'LowerLimit', [0.1], 'UpperLimit',[0.95])
+% actionInfo.Name ="PWM controller"
+%% Initialize enviroment
+env = rlSimulinkEnv(mdl,agentblk,observationInfo,actionInfo);
+
+env.ResetFcn = @(in)localResetFcn(in);
+%%
+
+modeAgentOpts = rlPPOAgentOptions(...
+    "SampleTime",Ts,...
+    "DiscountFactor",0.995,... %The discount factor of 0.99 is close to 1 and therefore favors long term reward with respect to a smaller value
+    "ExperienceHorizon",floor(Tf/Ts), ...
+    "MiniBatchSize",350, ...  % original 200
+    "EntropyLossWeight",0.01,...% original 0.01 facilities exploration during training.
+    "ClipFactor",0.3); %Clip factor for limiting the change in each policy update step, specified as a positive scalar less than 1.
+modeAgentOpts.ActorOptimizerOptions.LearnRate = 1e-4;
+modeAgentOpts.ActorOptimizerOptions.GradientThreshold = 1;
+modeAgentOpts.CriticOptimizerOptions.LearnRate = 4e-4;   
+initOptions = rlAgentInitializationOptions("NumHiddenUnit",128,"UseRNN",true);
+agent = rlPPOAgent(observationInfo,actionInfo,initOptions,modeAgentOpts);
+
+trainOpts = rlTrainingOptions(...
+    'MaxEpisodes',num_episodes ,...
+    'MaxStepsPerEpisode',max_steps,...
+    'Verbose',false,...
+    'Plots','training-progress',...
+    'StopTrainingCriteria','EpisodeCount',...
+    'StopTrainingValue',num_episodes,...
+    'ScoreAveragingWindowLength',100, ...
+'SaveAgentCriteria', "EpisodeReward",...
+"SaveAgentValue", 1200 ...
+   );
+%%
+getAction(agent,{rand(numObs,1)})
+
+% actor = getActor(agent);
+% critic = getCritic(agent);
+% actorNet = getModel(actor);
+% criticNet = getModel(critic);
+% plot(layerGraph(actorNet))
+%https://www.mathworks.com/help/reinforcement-learning/ref/rl.agent.rlqagent.getcritic.html 
+
+%%
+% n = 0;
+% Train Agent until specific range
+% Due to memory constraint we need to train the agent by batches
+% while n < 1
+%     trainingStats = train(agent,env,trainOpts);
+%     save("initialAgent"+ n +".mat","agent" )
+%     n = n +1;
+% end
+
+doTraining = true;
+if doTraining
+    trainingStats = train(agent,env,trainOpts);
+else
+    rng(0)
+   load('Agent7546.mat','saved_agent');
+    agent = saved_agent
+    rng(0)
+    sim(mdl);
+end
+%%
+rng(0)
+%sim(mdl,agent)
+sim(mdl);
+%%
+meanVout = mean(V_simout.Data)
+stdV_out= std(V_simout.Data)
+%sqrt(sum((V_simout.Data - mean(V_simout.Data)).^2)/V_simout.Length)
+meanSquareError = (sum(V_error.Data)^2)/V_error.Length
+meanAbsoluteError = (sum(V_error.Data))/V_error.Length
+%%
+% Train the agent
+trainingStats = train(agent,env,trainOpts);
+
+function in = localResetFcn(in)
+% Randomize reference signal
+%rng(0)
+% blk = sprintf('buck_boost_model/V_ref');
+% %V_ref = randi([12 30]);
+% V_ref = 80;
+% in = setBlockParameter(in,blk,'Value',num2str(V_ref));
+% PWM = 0.1:0.1:0.9; 
+% PWM2 = PWM(randi([1,numel(PWM)]));
+% blk = 'buckboost_48V_PPO19/Initial Condition Action';
+% in = setBlockParameter(in,blk,'Value',num2str(PWM2));
+end
